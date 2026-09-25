@@ -309,13 +309,19 @@ class MultiPaymentEntryMixin:
 
     def on_cancel(self):
         if self.is_multi_expense():
-            from erpnext.accounts.general_ledger import make_reverse_gl_entries
-            make_reverse_gl_entries(voucher_type=self.doctype, voucher_no=self.name)
+            # same list as ERPNext's own PaymentEntry.on_cancel
+            self.ignore_linked_doctypes = (
+                "GL Entry", "Stock Ledger Entry", "Payment Ledger Entry",
+                "Repost Payment Ledger", "Repost Payment Ledger Items",
+                "Repost Accounting Ledger", "Repost Accounting Ledger Items",
+                "Unreconcile Payment", "Unreconcile Payment Entries",
+            )
+            # make_gl_entries(cancel=1) already reverses the ledger (ERPNext's make_gl_entries with
+            # cancel=True calls make_reverse_gl_entries). Reversing here as well booked it twice.
             self.make_gl_entries(cancel=1)
-            self.update_payment_requests()
-            self.update_payment_schedule()
+            self.update_payment_requests(cancel=True)
+            self.update_payment_schedule(cancel=1)
             self.update_outstanding_amounts()
             self.set_status()
-            self.ignore_linked_doctypes = ["GL Entry"]
         else:
             super().on_cancel()
