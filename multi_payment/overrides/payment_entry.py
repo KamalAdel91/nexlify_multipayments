@@ -12,12 +12,17 @@ When ``multi_expense`` is ticked:
     Pay     -> every line posts Debit  (expense).
     Receive -> every line posts Credit (income).
 - The bank side is the total of all table rows.
+- Line amounts are in the bank account's currency and are converted to
+  company currency with the bank rate (source rate for Pay, target rate
+  for Receive), exactly like a normal Payment Entry's bank line.
 """
 
 import frappe
 from erpnext.accounts.doctype.payment_entry.payment_entry import get_account_details
 from erpnext.accounts.general_ledger import make_gl_entries, process_gl_map
-from erpnext.accounts.utils import cancel_exchange_gain_loss_journal
+from erpnext import get_company_currency
+from erpnext.accounts.utils import cancel_exchange_gain_loss_journal, get_account_currency
+from erpnext.setup.utils import get_exchange_rate
 from frappe import _
 from frappe.utils import cint, flt
 
@@ -65,18 +70,11 @@ class MultiPaymentEntryMixin:
         if self.is_multi_expense():
             self.setup_party_account_field()
             self.set_missing_values()
-            self._validate_company_currency()
+            self._validate_line_currencies()
             self.set_liability_account()
             self.set_missing_ref_details(force=True)
             self.validate_payment_type()
-            self.set_exchange_rate()
-            # In multi mode every amount is posted in company currency (see set_amounts,
-            # where base_*_amount == *_amount). The opposite-side account is intentionally
-            # left empty, so its rate may not be computed — default both to 1.
-            if not self.source_exchange_rate:
-                self.source_exchange_rate = 1
-            if not self.target_exchange_rate:
-                self.target_exchange_rate = 1
+            self._set_multi_exchange_rate()
             self.set_amounts()
             self._validate_mandatory_fields()
             self.validate_amounts()
@@ -130,9 +128,14 @@ class MultiPaymentEntryMixin:
             self.paid_to_account_balance = acc.account_balance
             self.paid_to_account_type = acc.account_type
 
+        # The opposite side has no account in multi mode: mirror the bank side so
+        # both currencies match (set_transaction_currency_and_rate reads both).
         if self.is_multi_expense() and self.payment_type == "Pay":
             self.paid_to_account_currency = self.paid_to_account_currency or self.paid_from_account_currency
             self.paid_to_account_type = self.paid_to_account_type or self.paid_from_account_type
+        if self.is_multi_expense() and self.payment_type == "Receive":
+            self.paid_from_account_currency = self.paid_from_account_currency or self.paid_to_account_currency
+            self.paid_from_account_type = self.paid_from_account_type or self.paid_to_account_type
 
     def _set_party_account_currency(self):
         if self.is_multi_expense():
@@ -204,6 +207,7 @@ class MultiPaymentEntryMixin:
         gl_entries = []
         self.make_expense_gl_entries(gl_entries)
         self.add_bank_gl_entries(gl_entries)
+        self.set_transaction_currency_and_rate_in_gl_map(gl_entries)
         return gl_entries
 
     def make_expense_gl_entries(self, gl_entries):
@@ -211,12 +215,14 @@ class MultiPaymentEntryMixin:
         if not self.is_multi_expense() or not self.get("expense_items"):
             return
 
+        company_currency = get_company_currency(self.company)
         for line in self.expense_items:
             if not flt(line.amount):
                 continue
-            account_currency = self.paid_from_account_currency
-            if self.payment_type == "Receive":
-                account_currency = self.paid_to_account_currency
+            account_currency = get_account_currency(line.account)
+            base = self._line_base_amount(line)
+            # company-currency account -> converted value; bank-currency account -> line value
+            in_account = base if account_currency == company_currency else flt(line.amount)
 
             gl_row = {
                 "account": line.account,
@@ -227,12 +233,10 @@ class MultiPaymentEntryMixin:
                 "party": line.party or None,
                 "remarks": line.remarks or None,
             }
-            if self.payment_type == "Pay":
-                gl_row["debit_in_account_currency"] = line.amount
-                gl_row["debit"] = line.amount
-            else:
-                gl_row["credit_in_account_currency"] = line.amount
-                gl_row["credit"] = line.amount
+            dr_cr = "debit" if self.payment_type == "Pay" else "credit"
+            gl_row[dr_cr] = base
+            gl_row[f"{dr_cr}_in_account_currency"] = in_account
+            gl_row[f"{dr_cr}_in_transaction_currency"] = flt(line.amount)
             # item=line: accounting dimensions come from the line, then from the payment
             gl_entries.append(self.get_gl_dict(gl_row, item=line))
 
@@ -246,26 +250,28 @@ class MultiPaymentEntryMixin:
             super().add_bank_gl_entries(gl_entries)
 
     def _add_multi_pay_bank_gl(self, gl_entries):
-        total = sum(flt(row.amount) for row in (self.expense_items or []))
+        total, base_total = self._multi_totals()
         gl_entry = {
             "account": self.paid_from,
             "account_currency": self.paid_from_account_currency,
             "against": self.party or None,
             "credit_in_account_currency": total,
-            "credit": total,
+            "credit_in_transaction_currency": total,
+            "credit": base_total,
             "cost_center": self.cost_center,
             "post_net_value": True,
         }
         gl_entries.append(self.get_gl_dict(gl_entry, item=self))
 
     def _add_multi_receive_bank_gl(self, gl_entries):
-        total = sum(flt(row.amount) for row in (self.expense_items or []))
+        total, base_total = self._multi_totals()
         gl_entry = {
             "account": self.paid_to,
             "account_currency": self.paid_to_account_currency,
             "against": self.party or None,
             "debit_in_account_currency": total,
-            "debit": total,
+            "debit_in_transaction_currency": total,
+            "debit": base_total,
             "cost_center": self.cost_center,
         }
         gl_entries.append(self.get_gl_dict(gl_entry, item=self))
@@ -291,12 +297,13 @@ class MultiPaymentEntryMixin:
         super().set_amounts()
         if not self.is_multi_expense():
             return
-        total = sum(flt(row.amount) for row in (self.expense_items or []))
+        total, base_total = self._multi_totals()
         self.paid_amount = total
-        self.base_paid_amount = total
+        self.base_paid_amount = base_total
         self.received_amount = total
-        self.base_received_amount = total
+        self.base_received_amount = base_total
         self.expense_total_amount = total
+        self.expense_currency = self._bank_currency()
 
     # ---------------------------------------------------------------
     # on_cancel GL reversal
@@ -321,21 +328,67 @@ class MultiPaymentEntryMixin:
         else:
             super().on_cancel()
 
-    def _validate_company_currency(self):
-        """Multi mode posts every amount in company currency, so the bank account must be too."""
-        from erpnext import get_company_currency
+    # ---------------------------------------------------------------
+    # currency (multi mode): lines are in the bank account's currency
+    # ---------------------------------------------------------------
 
-        bank = self.paid_from if self.payment_type == "Pay" else self.paid_to
-        bank_currency = (
-            self.paid_from_account_currency if self.payment_type == "Pay" else self.paid_to_account_currency
-        )
+    def _bank_currency(self):
+        return self.paid_from_account_currency if self.payment_type == "Pay" else self.paid_to_account_currency
+
+    def _bank_rate(self):
+        return flt(self.source_exchange_rate if self.payment_type == "Pay" else self.target_exchange_rate) or 1
+
+    def _set_multi_exchange_rate(self):
+        """Bank rate (source for Pay, target for Receive), copied to the other side.
+
+        Keeps a rate the user typed; otherwise fetches it like ERPNext does.
+        Replaces set_exchange_rate(), which would overwrite the Receive rate
+        with the (empty) source rate because both currencies are mirrored.
+        """
         company_currency = get_company_currency(self.company)
-        if bank and bank_currency and bank_currency != company_currency:
-            frappe.throw(
-                _("Multi Expense / Revenue works only with {0} accounts. Account {1} is in {2}.").format(
-                    company_currency, frappe.bold(bank), bank_currency
-                )
+        bank_currency = self._bank_currency()
+        rate_field = "source_exchange_rate" if self.payment_type == "Pay" else "target_exchange_rate"
+
+        if not bank_currency or bank_currency == company_currency:
+            rate = 1
+        else:
+            rate = flt(self.get(rate_field)) or get_exchange_rate(
+                bank_currency, company_currency, self.posting_date
             )
+            if not rate:
+                frappe.throw(
+                    _("Exchange rate from {0} to {1} is missing. Enter it or add a Currency Exchange record.").format(
+                        bank_currency, company_currency
+                    )
+                )
+        self.source_exchange_rate = rate
+        self.target_exchange_rate = rate
+
+    def _line_base_amount(self, line):
+        return flt(flt(line.amount) * self._bank_rate(), self.precision("base_paid_amount"))
+
+    def _multi_totals(self):
+        """(total in bank currency, total in company currency = sum of rounded lines)."""
+        lines = [row for row in (self.expense_items or []) if flt(row.amount)]
+        total = flt(sum(flt(row.amount) for row in lines), self.precision("paid_amount"))
+        base_total = flt(sum(self._line_base_amount(row) for row in lines), self.precision("base_paid_amount"))
+        return total, base_total
+
+    def _validate_line_currencies(self):
+        """Each line account must be in company currency or in the bank's currency."""
+        company_currency = get_company_currency(self.company)
+        bank_currency = self._bank_currency()
+        allowed = {company_currency, bank_currency} - {None}
+        for line in self.expense_items or []:
+            if not line.account:
+                continue
+            currency = get_account_currency(line.account)
+            if currency not in allowed:
+                frappe.throw(
+                    _("Row {0}: account {1} is in {2}. Lines must be in {3}.").format(
+                        line.idx, frappe.bold(line.account), currency, " / ".join(sorted(allowed))
+                    )
+                )
 
     def _validate_no_taxes_or_deductions(self):
         """The bank side in multi mode is the total of the lines only, so taxes or

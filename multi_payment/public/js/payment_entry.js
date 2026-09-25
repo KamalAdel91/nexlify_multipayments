@@ -31,7 +31,18 @@ frappe.ui.form.on("Payment Entry", {
             frm.doc.party = "";
         }
     },
+
+    // Bank currency / rate changes (ERPNext's own handlers run first and set
+    // the rate asynchronously; these fire again once it lands).
+    paid_from_account_currency: _recalc_if_multi,
+    paid_to_account_currency: _recalc_if_multi,
+    source_exchange_rate: _recalc_if_multi,
+    target_exchange_rate: _recalc_if_multi,
 });
+
+function _recalc_if_multi(frm) {
+    if (frm.doc.multi_expense) _recalc_total(frm);
+}
 
 // ── Grid row events ──
 
@@ -223,62 +234,60 @@ function _update_labels(frm) {
     }
 }
 
-function _recalc_total(frm) {
-    let total = 0;
-    if (frm.doc.expense_items) {
-        for (const row of frm.doc.expense_items) {
-            total += flt(row.amount);
-        }
-    }
+function _bank_currency(frm) {
+    return frm.doc.payment_type === "Receive"
+        ? frm.doc.paid_to_account_currency
+        : frm.doc.paid_from_account_currency;
+}
 
-    // Bail out early if nothing actually changed. This function now runs
-    // on every refresh(frm) - including the refresh Frappe triggers right
-    // after a successful Save - so calling frm.dirty() unconditionally
-    // was re-marking a just-saved document as having unsaved changes on
-    // every single refresh cycle. That kept Frappe perpetually treating
-    // the document as "not fully saved", which is why the Submit button
-    // never appeared: only re-dirty (and re-set) when the computed total
-    // genuinely differs from what's already on frm.doc.
+function _bank_rate(frm) {
+    return flt(frm.doc.payment_type === "Receive"
+        ? frm.doc.target_exchange_rate
+        : frm.doc.source_exchange_rate) || 1;
+}
+
+function _recalc_total(frm) {
+    // Mirrors overrides/payment_entry.py: line amounts are in the bank's
+    // currency; base = sum of each line converted at the bank rate, rounded.
+    const rate = _bank_rate(frm);
+    const base_precision = precision("base_paid_amount");
+    let total = 0;
+    let base_total = 0;
+    for (const row of frm.doc.expense_items || []) {
+        total += flt(row.amount);
+        base_total += flt(flt(row.amount) * rate, base_precision);
+    }
+    total = flt(total, precision("paid_amount"));
+    base_total = flt(base_total, base_precision);
+    const currency = _bank_currency(frm) || frm.doc.expense_currency;
+
+    // Only touch the doc when something changed: this runs on every refresh,
+    // and an unconditional frm.dirty() kept a saved doc "unsaved" (no Submit).
     if (
         flt(frm.doc.paid_amount) === total &&
         flt(frm.doc.received_amount) === total &&
-        flt(frm.doc.expense_total_amount) === total
+        flt(frm.doc.expense_total_amount) === total &&
+        flt(frm.doc.base_paid_amount) === base_total &&
+        flt(frm.doc.base_received_amount) === base_total &&
+        frm.doc.expense_currency === currency
     ) {
         return;
     }
 
-    // Root cause of the earlier flicker: frm.set_value("paid_amount"/
-    // "received_amount", ...) fires ERPNext's own native paid_amount/
-    // received_amount handlers, which - among other things - call
-    // allocate_party_amount_against_ref_docs(). That does an ASYNC server
-    // round-trip (frm.call("allocate_amount_to_references", ...)) that
-    // recomputes the allocated/unallocated amount from the references
-    // table. In multi-expense mode there are no references at all, so
-    // that async call comes back and resets paid_amount/received_amount
-    // toward 0 a moment after we set them - the "flicker".
-    //
-    // These two fields are purely a display/derived total in multi mode
-    // (nothing here is meant to allocate against invoices), so we bypass
-    // frm.set_value entirely for them and write frm.doc directly - this
-    // never triggers the native field-change chain, so none of that
-    // reference-allocation machinery ever runs in the first place.
+    // Written straight to frm.doc, not frm.set_value: set_value would fire
+    // ERPNext's paid_amount/received_amount handlers, whose async reference
+    // allocation resets these totals a moment later (no references here).
     frm.doc.paid_amount = total;
     frm.doc.received_amount = total;
     frm.doc.expense_total_amount = total;
-    // Mirror overrides/payment_entry.py's set_amounts(): the server sets
-    // base_paid_amount/base_received_amount = total correctly at save
-    // time, but Frappe's client-side mandatory-field check runs *before*
-    // that, still seeing whatever was last computed here (0, since we no
-    // longer trigger the native chain that used to fill it in). Set the
-    // same value client-side too so that pre-save check passes.
-    frm.doc.base_paid_amount = total;
-    frm.doc.base_received_amount = total;
+    frm.doc.base_paid_amount = base_total;
+    frm.doc.base_received_amount = base_total;
+    frm.doc.expense_currency = currency;
     frm.dirty();
-    frm.refresh_field("paid_amount");
-    frm.refresh_field("received_amount");
-    frm.refresh_field("expense_total_amount");
-    frm.refresh_field("base_paid_amount");
-    frm.refresh_field("base_received_amount");
+    for (const f of ["paid_amount", "received_amount", "expense_total_amount",
+                     "base_paid_amount", "base_received_amount", "expense_items"]) {
+        frm.refresh_field(f);
+    }
 }
 
 // Expense / revenue lines: only active projects of the payment's company

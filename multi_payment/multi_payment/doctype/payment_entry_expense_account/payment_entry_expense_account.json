@@ -29,7 +29,7 @@
    "fieldtype": "Currency",
    "in_list_view": 1,
    "label": "Amount",
-   "options": "Company:company:default_currency",
+   "options": "expense_currency",
    "reqd": 1
   },
   {
