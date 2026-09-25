@@ -204,15 +204,6 @@ class MultiPaymentEntryMixin:
         gl_entries = []
         self.make_expense_gl_entries(gl_entries)
         self.add_bank_gl_entries(gl_entries)
-        self.add_deductions_gl_entries(gl_entries)
-        self.add_tax_gl_entries(gl_entries)
-
-        from erpnext import allow_regional
-        add_regional_gl_entries = allow_regional(lambda gl_entries, doc: None)
-        try:
-            add_regional_gl_entries(gl_entries, self)
-        except Exception:
-            pass
         return gl_entries
 
     def make_expense_gl_entries(self, gl_entries):
