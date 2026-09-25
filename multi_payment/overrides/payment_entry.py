@@ -229,6 +229,7 @@ class MultiPaymentEntryMixin:
                 "account": line.account,
                 "account_currency": account_currency,
                 "cost_center": line.cost_center or self.cost_center,
+                "project": line.get("project") or self.get("project"),
                 "party_type": line.party_type or None,
                 "party": line.party or None,
                 "remarks": line.remarks or None,
@@ -239,7 +240,8 @@ class MultiPaymentEntryMixin:
             else:
                 gl_row["credit_in_account_currency"] = line.amount
                 gl_row["credit"] = line.amount
-            gl_entries.append(self.get_gl_dict(gl_row, item=self))
+            # item=line: accounting dimensions come from the line, then from the payment
+            gl_entries.append(self.get_gl_dict(gl_row, item=line))
 
     def add_bank_gl_entries(self, gl_entries):
         if self.is_multi_expense():

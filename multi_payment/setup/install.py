@@ -41,10 +41,12 @@ CUSTOM_FIELDS = {
 
 def after_install():
 	create_custom_fields(CUSTOM_FIELDS, update=True)
+	_add_dimensions()
 
 
 def after_migrate():
 	create_custom_fields(CUSTOM_FIELDS, update=True)
+	_add_dimensions()
 
 
 def before_uninstall():
@@ -54,3 +56,11 @@ def before_uninstall():
 			if name:
 				frappe.delete_doc("Custom Field", name, ignore_permissions=True)
 	frappe.clear_cache(doctype="Payment Entry")
+
+
+def _add_dimensions():
+	"""Every Accounting Dimension (existing or added later) gets a field on the expense lines."""
+	from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import (
+		create_accounting_dimensions_for_doctype,
+	)
+	create_accounting_dimensions_for_doctype("Payment Entry Expense Account")

@@ -20,3 +20,6 @@ extend_doctype_class = {
 after_install = "multi_payment.setup.install.after_install"
 after_migrate = "multi_payment.setup.install.after_migrate"
 before_uninstall = "multi_payment.setup.install.before_uninstall"
+
+# ERPNext adds every Accounting Dimension to these doctypes
+accounting_dimension_doctypes = ["Payment Entry Expense Account"]

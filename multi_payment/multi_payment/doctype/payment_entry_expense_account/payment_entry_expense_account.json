@@ -10,6 +10,7 @@
   "account",
   "amount",
   "cost_center",
+  "project",
   "party_type",
   "party",
   "remarks"
@@ -39,18 +40,18 @@
    "options": "Cost Center"
   },
   {
+   "columns": 2,
    "fieldname": "party_type",
    "fieldtype": "Link",
    "in_list_view": 1,
-   "columns": 2,
    "label": "Party Type",
    "options": "DocType"
   },
   {
+   "columns": 2,
    "fieldname": "party",
    "fieldtype": "Dynamic Link",
    "in_list_view": 1,
-   "columns": 2,
    "label": "Party",
    "options": "party_type"
   },
@@ -58,6 +59,14 @@
    "fieldname": "remarks",
    "fieldtype": "Small Text",
    "label": "Remarks"
+  },
+  {
+   "columns": 2,
+   "fieldname": "project",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Project",
+   "options": "Project"
   }
  ],
  "istable": 1,
