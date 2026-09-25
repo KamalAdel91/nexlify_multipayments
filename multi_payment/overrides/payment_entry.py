@@ -56,15 +56,6 @@ class MultiPaymentEntryMixin:
         self._set_payment_account_details()
         self._set_party_account_currency()
 
-    def validate_mandatory(self):
-        """Skip party account checks in multi-expense mode."""
-        if not self.is_multi_expense():
-            super().validate_mandatory()
-            return
-        for field in ("paid_amount", "received_amount",):
-            if not self.get(field):
-                frappe.throw(_("{0} is mandatory").format(_(self.meta.get_label(field))))
-
     def validate(self):
         """Override to skip upstream party validations in multi mode."""
         if self.is_multi_expense():
@@ -138,19 +129,8 @@ class MultiPaymentEntryMixin:
             self.paid_from_account_type = self.paid_from_account_type or self.paid_to_account_type
 
     def _set_party_account_currency(self):
-        if self.is_multi_expense():
-            # No party in multi mode — use the BANK side currency so that
-            # set_exchange_rate() can resolve source/target rates (paid_from
-            # is empty for multi Receive and must not be looked up).
-            self.party_account_currency = (
-                self.paid_from_account_currency if self.payment_type == "Pay"
-                else self.paid_to_account_currency
-            )
-            return
-        self.party_account_currency = (
-            self.paid_from_account_currency if self.payment_type == "Receive"
-            else self.paid_to_account_currency
-        )
+        # No party in multi mode: use the bank side currency.
+        self.party_account_currency = self._bank_currency()
 
     def _validate_mandatory_fields(self):
         if not self.get("expense_items"):

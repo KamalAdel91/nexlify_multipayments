@@ -4,7 +4,7 @@
 //   - Party & reference sections are hidden.
 //   - The expense/revenue child table is shown.
 //   - Labels switch: Pay  → "Expenses",  Receive → "Revenues".
-//   - Account filter: Pay → Expense + Tax,  Receive → Income.
+//   - Line accounts: any leaf account of the company.
 
 frappe.ui.form.on("Payment Entry", {
     refresh(frm) {
