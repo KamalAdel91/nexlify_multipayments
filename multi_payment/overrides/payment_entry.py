@@ -97,6 +97,7 @@ class MultiPaymentEntryMixin:
             self.ensure_supplier_is_not_blocked()
             from erpnext.accounts.doctype.tax_withholding_entry.tax_withholding_entry import PaymentTaxWithholding
             PaymentTaxWithholding(self).on_validate()
+            self._validate_no_taxes_or_deductions()
             self.set_status()
             self.set_total_in_words()
         else:
@@ -343,4 +344,13 @@ class MultiPaymentEntryMixin:
                 _("Multi Expense / Revenue works only with {0} accounts. Account {1} is in {2}.").format(
                     company_currency, frappe.bold(bank), bank_currency
                 )
+            )
+
+    def _validate_no_taxes_or_deductions(self):
+        """The bank side in multi mode is the total of the lines only, so taxes or
+        deductions would leave the GL unbalanced. Book them as lines instead."""
+        if self.get("taxes") or self.get("deductions"):
+            frappe.throw(
+                _("Taxes and Deductions are not supported with Multi Expense / Revenue. "
+                  "Add them as lines in the Expenses / Revenues table instead.")
             )
