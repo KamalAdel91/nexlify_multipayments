@@ -65,6 +65,7 @@ class MultiPaymentEntryMixin:
         if self.is_multi_expense():
             self.setup_party_account_field()
             self.set_missing_values()
+            self._validate_company_currency()
             self.set_liability_account()
             self.set_missing_ref_details(force=True)
             self.validate_payment_type()
@@ -327,3 +328,19 @@ class MultiPaymentEntryMixin:
             self.set_status()
         else:
             super().on_cancel()
+
+    def _validate_company_currency(self):
+        """Multi mode posts every amount in company currency, so the bank account must be too."""
+        from erpnext import get_company_currency
+
+        bank = self.paid_from if self.payment_type == "Pay" else self.paid_to
+        bank_currency = (
+            self.paid_from_account_currency if self.payment_type == "Pay" else self.paid_to_account_currency
+        )
+        company_currency = get_company_currency(self.company)
+        if bank and bank_currency and bank_currency != company_currency:
+            frappe.throw(
+                _("Multi Expense / Revenue works only with {0} accounts. Account {1} is in {2}.").format(
+                    company_currency, frappe.bold(bank), bank_currency
+                )
+            )
